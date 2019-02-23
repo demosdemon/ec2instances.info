@@ -1,0 +1,80 @@
+stages:
+  - pages
+  - update
+
+image: python:3.7
+
+update:
+  stage: update
+
+  before_script:
+    - pip install -r requirements.txt
+    - python -V
+    - pip -V
+    - pip freeze
+
+  script:
+    - invoke build
+    # exit early if there are no changes
+    - if [ -z "$(git status --porcelain www/)" ]; then exit 0; fi
+    # if there are changes, setup the environment so we can make a commit and push
+    - mkdir -p ~/.ssh
+    - chmod 0700 ~/.ssh
+    # export private key where ssh can find it
+    - echo -n "$SECRET_KEY" > ~/.ssh/id_rsa
+    - chmod 0400 ~/.ssh/id_rsa
+    # some tools require the public key even though it is derivable from the private key
+    - ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
+    # print out the fingerprint of the key for the build log to help debug any authentication
+    # issues
+    - ssh-keygen -l -E sha256 -f ~/.ssh/id_rsa
+    - ssh-keygen -l -E md5 -f ~/.ssh/id_rsa
+    # update the git remote, by default it uses https without push access
+    - git remote set-url origin git@lab.plat.farm:${CI_PROJECT_PATH}.git
+    # set the git name and email address so `git commit` does not fail
+    - git config --global user.name "$GITLAB_USER_NAME"
+    - git config --global user.email "$GITLAB_USER_EMAIL"
+    # stage the changes
+    - git add www
+    # build the commit message
+    - COMMIT_MSG=$(mktemp)
+    - |
+      cat <<EOF > "$COMMIT_MSG"
+      Automated Update on $(date)
+
+      $(git status www)
+      EOF
+    - git commit -F "$COMMIT_MSG" --cleanup=strip --no-edit --only -- www
+    - git push origin "$CI_COMMIT_REF_NAME"
+
+  artifacts:
+    paths:
+      - www/
+    expire_in: 1 week
+
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+  cache:
+    key: update
+    paths:
+      - .cache/pip
+
+  only:
+    refs:
+      - schedules
+
+pages:
+  stage: pages
+
+  script:
+    - mv www public
+
+  artifacts:
+    paths:
+      - public/
+    expire_in: 6 months
+
+  only:
+    refs:
+      - master
